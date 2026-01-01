@@ -1,0 +1,137 @@
+workflows:
+  ios_game_unsigned:
+    name: Build iOS Game (Unsigned for Sideloadly)
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      # ----------------------------------------------------------------
+      # 1. SETUP & DEPENDENCIES
+      # ----------------------------------------------------------------
+      - name: Install dependencies
+        script: |
+          #!/bin/bash
+          set -e
+          
+          echo "📦 Running Flutter pub get..."
+          flutter pub get
+          
+          # Nếu bạn đã chạy lệnh tạo icon ở local và commit assets/icon.png lên git
+          # thì không cần chạy lại flutter_launcher_icons ở đây.
+          # Nhưng chạy dự phòng cũng không sao.
+          echo "🎨 Ensuring App Icons are generated..."
+          flutter pub run flutter_launcher_icons || true
+
+          echo "🔧 Precaching iOS tools..."
+          flutter precache --ios
+
+      # ----------------------------------------------------------------
+      # 2. HACK PROJECT (QUAN TRỌNG NHẤT)
+      # ----------------------------------------------------------------
+      - name: Disable Signing & Configure Xcode Project
+        script: |
+          #!/bin/bash
+          set -e
+          
+          echo "🏗️ Generating Xcode project structure..."
+          # Chạy lệnh này để Flutter tạo ra folder ios/Runner.xcodeproj
+          # Nó sẽ fail ở bước signing, nhưng ta chỉ cần nó tạo ra file project thôi
+          flutter build ios --release --no-codesign || true
+          
+          PBXPROJ="ios/Runner.xcodeproj/project.pbxproj"
+          
+          if [ -f "$PBXPROJ" ]; then
+              echo "🔒 Hacking project.pbxproj to remove signing requirements..."
+              cp "$PBXPROJ" "$PBXPROJ.backup"
+              
+              # Dùng sed để xóa sạch các yêu cầu Signing trong file cấu hình Xcode
+              # 1. Xóa Signing Identity
+              sed -i '' 's/CODE_SIGN_IDENTITY = .*;/CODE_SIGN_IDENTITY = "";/g' "$PBXPROJ"
+              # 2. Xóa Development Team
+              sed -i '' 's/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = "";/g' "$PBXPROJ"
+              # 3. Chuyển Provisioning sang Manual
+              sed -i '' 's/ProvisioningStyle = Automatic;/ProvisioningStyle = Manual;/g' "$PBXPROJ"
+              # 4. Tắt Bitcode (Game sẽ build nhanh hơn và nhẹ hơn)
+              sed -i '' 's/ENABLE_BITCODE = YES;/ENABLE_BITCODE = NO;/g' "$PBXPROJ"
+              
+              echo "✅ Code signing disabled successfully!"
+          else
+              echo "❌ Error: project.pbxproj not found!"
+              exit 1
+          fi
+
+      # ----------------------------------------------------------------
+      # 3. BUILD ARCHIVE (UNSIGNED)
+      # ----------------------------------------------------------------
+      - name: Build XCArchive via xcodebuild
+        script: |
+          #!/bin/bash
+          set -e
+          
+          cd ios
+          
+          echo "🔄 Updating Pods (Flame engines need this)..."
+          pod repo update --silent
+          pod install
+          
+          echo "🚀 Building Runner.xcarchive..."
+          # Lệnh build native ép buộc không ký (No Sign)
+          xcodebuild \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath ../build/Runner.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ENABLE_BITCODE=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            archive
+          
+          cd ..
+
+      # ----------------------------------------------------------------
+      # 4. PACKAGE IPA (MANUAL PAYLOAD)
+      # ----------------------------------------------------------------
+      - name: Package Payload into IPA
+        script: |
+          #!/bin/bash
+          set -e
+          
+          # Đường dẫn file app sau khi archive
+          APP_PATH="build/Runner.xcarchive/Products/Applications/Runner.app"
+          
+          if [ ! -d "$APP_PATH" ]; then
+              echo "❌ Error: Runner.app not found. Build failed."
+              exit 1
+          fi
+          
+          echo "📦 Packaging IPA manually for Sideloadly..."
+          cd build/Runner.xcarchive/Products/Applications
+          
+          # Tạo cấu trúc chuẩn của file IPA: Folder Payload chứa file .app
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          
+          # Zip lại thành .ipa
+          # Flag -r: Recursive (thư mục con)
+          # Flag -y: Giữ nguyên Symlinks (Rất quan trọng với Frameworks của Game)
+          zip -r -y Runner_Unsigned.ipa Payload/
+          
+          # Di chuyển ra ngoài để Artifacts lấy được
+          mv Runner_Unsigned.ipa ../../../../Runner_Unsigned.ipa
+          
+          echo "🎉 IPA Created: Runner_Unsigned.ipa"
+
+    # ----------------------------------------------------------------
+    # 5. OUTPUT
+    # ----------------------------------------------------------------
+    artifacts:
+      - Runner_Unsigned.ipa

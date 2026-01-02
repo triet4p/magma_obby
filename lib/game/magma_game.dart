@@ -36,10 +36,17 @@ class MagmaGame extends FlameGame with TapCallbacks {
 
   @override
   Future<void> onLoad() async {
+    // --- FIX QUAN TRỌNG: FIXED RESOLUTION ---
+    // Ép game chạy ở độ phân giải thiết kế (450x800) bất kể màn hình thiết bị
+    // Nó sẽ tự phóng to trên iPad để vừa khít chiều cao
+    camera = CameraComponent.withFixedResolution(
+      width: GameConstants.gameWidth,
+      height: GameConstants.gameHeight,
+    );
     camera.viewfinder.anchor = Anchor.topLeft;
+    camera.viewfinder.position = Vector2.zero();
 
     // --- SETUP JOYSTICK ---
-    // Sử dụng biến Paint đã khai báo ở trên để có thể thay đổi màu sau này
     joystick = JoystickComponent(
       knob: CircleComponent(radius: 25, paint: knobPaint),
       background: CircleComponent(radius: 50, paint: backgroundPaint),
@@ -47,10 +54,10 @@ class MagmaGame extends FlameGame with TapCallbacks {
       priority: 100, 
     );
     
-    // Add Joystick NGAY TỪ ĐẦU và KHÔNG BAO GIỜ REMOVE
+    // Joystick sẽ được add vào Viewport ảo (450x800), nên vị trí sẽ luôn chuẩn
     camera.viewport.add(joystick);
     
-    // Mặc định ẩn đi (làm trong suốt) lúc mới vào app
+    // Mặc định ẩn
     _setJoystickVisible(false);
   }
 
@@ -77,19 +84,21 @@ class MagmaGame extends FlameGame with TapCallbacks {
     score = 0;
     onScoreChanged(0);
     lavaLevel = GameConstants.gameHeight + 200;
+    
+    // Reset camera về 0
     camera.viewfinder.position = Vector2.zero();
 
     gameState = GameState.playing;
 
-    // FIX: Hiện Joystick bằng cách đổi màu
     _setJoystickVisible(true);
   }
 
   @override
   void onTapDown(TapDownEvent event) {
     if (gameState == GameState.playing && player != null) {
+      // Chuyển toạ độ tap từ màn hình thật sang màn hình ảo
       final viewPos = camera.viewport.globalToLocal(event.localPosition);
-      // Chỉ nhảy khi không chạm vào vùng Joystick
+      
       if (!joystick.containsPoint(viewPos)) {
         player!.jump();
       }
@@ -148,7 +157,6 @@ class MagmaGame extends FlameGame with TapCallbacks {
     if (gameState == GameState.playing) {
       gameState = GameState.gameOver;
       
-      // FIX: Ẩn Joystick bằng cách đổi màu thành trong suốt TRƯỚC KHI pause
       _setJoystickVisible(false);
 
       pauseEngine(); 

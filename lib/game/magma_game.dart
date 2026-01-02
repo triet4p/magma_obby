@@ -9,9 +9,13 @@ import '../../core/constants.dart';
 import '../../core/types.dart';
 import 'components/platform.dart';
 import 'components/player.dart';
+import 'components/lava.dart'; // <-- NHỚ IMPORT FILE LAVA MỚI
 
 class MagmaGame extends FlameGame with TapCallbacks {
   Player? player;
+  // Thêm Component Lava
+  late final Lava lava;
+  
   List<Platform> platforms = []; 
   double lavaLevel = 0;
   
@@ -21,8 +25,7 @@ class MagmaGame extends FlameGame with TapCallbacks {
   Function(int) onGameOver;
 
   late final JoystickComponent joystick;
-
-  // QUẢN LÝ MÀU JOYSTICK ĐỂ ẨN/HIỆN
+  
   final Paint knobPaint = Paint()..color = Colors.white.withOpacity(0.5);
   final Paint backgroundPaint = Paint()..color = Colors.white.withOpacity(0.1);
 
@@ -36,9 +39,7 @@ class MagmaGame extends FlameGame with TapCallbacks {
 
   @override
   Future<void> onLoad() async {
-    // --- FIX QUAN TRỌNG: FIXED RESOLUTION ---
-    // Ép game chạy ở độ phân giải thiết kế (450x800) bất kể màn hình thiết bị
-    // Nó sẽ tự phóng to trên iPad để vừa khít chiều cao
+    // Camera Fixed Resolution: Tự động scale game để vừa khít màn hình iPad
     camera = CameraComponent.withFixedResolution(
       width: GameConstants.gameWidth,
       height: GameConstants.gameHeight,
@@ -46,7 +47,10 @@ class MagmaGame extends FlameGame with TapCallbacks {
     camera.viewfinder.anchor = Anchor.topLeft;
     camera.viewfinder.position = Vector2.zero();
 
-    // --- SETUP JOYSTICK ---
+    // 1. Khởi tạo Lava
+    lava = Lava();
+    
+    // 2. Setup Joystick
     joystick = JoystickComponent(
       knob: CircleComponent(radius: 25, paint: knobPaint),
       background: CircleComponent(radius: 50, paint: backgroundPaint),
@@ -54,10 +58,7 @@ class MagmaGame extends FlameGame with TapCallbacks {
       priority: 100, 
     );
     
-    // Joystick sẽ được add vào Viewport ảo (450x800), nên vị trí sẽ luôn chuẩn
     camera.viewport.add(joystick);
-    
-    // Mặc định ẩn
     _setJoystickVisible(false);
   }
 
@@ -74,6 +75,10 @@ class MagmaGame extends FlameGame with TapCallbacks {
   void resetGame() {
     world.children.whereType<Platform>().forEach((p) => p.removeFromParent());
     if (player != null && player!.isMounted) player!.removeFromParent();
+    
+    // Nếu lava chưa add vào world thì add, nếu có rồi thì thôi
+    if (!lava.isMounted) world.add(lava);
+
     platforms.clear();
 
     player = Player();
@@ -83,28 +88,28 @@ class MagmaGame extends FlameGame with TapCallbacks {
 
     score = 0;
     onScoreChanged(0);
-    lavaLevel = GameConstants.gameHeight + 200;
     
-    // Reset camera về 0
+    // Reset vị trí Lava
+    lavaLevel = GameConstants.gameHeight + 200;
+    lava.position = Vector2(0, lavaLevel); // Cập nhật vị trí hiển thị ngay
+
     camera.viewfinder.position = Vector2.zero();
 
     gameState = GameState.playing;
-
     _setJoystickVisible(true);
   }
 
   @override
   void onTapDown(TapDownEvent event) {
     if (gameState == GameState.playing && player != null) {
-      // Chuyển toạ độ tap từ màn hình thật sang màn hình ảo
       final viewPos = camera.viewport.globalToLocal(event.localPosition);
-      
       if (!joystick.containsPoint(viewPos)) {
         player!.jump();
       }
     }
   }
 
+  // --- SPAWN LOGIC (Giữ nguyên) ---
   void _spawnInitialPlatforms() {
     _addPlatform(PlatformData(x: 0, y: GameConstants.gameHeight - 50, w: GameConstants.gameWidth, h: 50));
     double nextY = GameConstants.gameHeight - 220;
@@ -156,9 +161,7 @@ class MagmaGame extends FlameGame with TapCallbacks {
   void gameOver() {
     if (gameState == GameState.playing) {
       gameState = GameState.gameOver;
-      
       _setJoystickVisible(false);
-
       pauseEngine(); 
       onGameOver(score);
     }
@@ -171,27 +174,19 @@ class MagmaGame extends FlameGame with TapCallbacks {
 
     final p = player!;
 
-    // --- INPUT JOYSTICK ---
+    // Input & Camera Logic (Giữ nguyên)
     p.leftPressed = false;
     p.rightPressed = false;
+    if (joystick.relativeDelta.x < -0.2) p.leftPressed = true;
+    else if (joystick.relativeDelta.x > 0.2) p.rightPressed = true;
 
-    if (joystick.relativeDelta.x < -0.2) { 
-      p.leftPressed = true;
-    } else if (joystick.relativeDelta.x > 0.2) {
-      p.rightPressed = true;
-    }
-
-    // --- SMOOTH CAMERA ---
     double targetCamY = p.y - (GameConstants.gameHeight * 0.55); 
     if (targetCamY > 0) targetCamY = 0;
     double currentY = camera.viewfinder.position.y;
     double newY = lerpDouble(currentY, targetCamY, dt * 3.0) ?? currentY;
-    if (p.isRocketing) {
-       newY = lerpDouble(currentY, targetCamY, dt * 10.0) ?? currentY;
-    }
+    if (p.isRocketing) newY = lerpDouble(currentY, targetCamY, dt * 10.0) ?? currentY;
     camera.viewfinder.position = Vector2(0, newY);
 
-    // --- LOGIC MAP ---
     if (platforms.isNotEmpty) {
       final topPlat = platforms.last;
       if (topPlat.y > camera.viewfinder.position.y - 800) {
@@ -200,8 +195,16 @@ class MagmaGame extends FlameGame with TapCallbacks {
       }
     }
 
+    // --- LAVA LOGIC MỚI ---
+    // 1. Tính toán mực nước
     lavaLevel -= Physics.lavaSpeed * (dt * 60);
-    if (p.y + p.height > lavaLevel && !p.isRocketing) {
+    
+    // 2. Cập nhật vị trí hiển thị của Component Lava (ĐỒNG BỘ VISUAL)
+    lava.position = Vector2(0, lavaLevel);
+
+    // 3. Kiểm tra va chạm (ĐỒNG BỘ LOGIC)
+    // Lưu ý: +10 để du di một chút cho người chơi
+    if (p.y + p.height > lavaLevel + 10 && !p.isRocketing) {
       gameOver();
     }
 
@@ -212,25 +215,6 @@ class MagmaGame extends FlameGame with TapCallbacks {
     }
   }
 
-  @override
-  void render(Canvas canvas) {
-    super.render(canvas);
-    if (gameState != GameState.playing) return;
-    
-    final paintLava = Paint()..color = AppColors.lava;
-    final path = Path();
-    double waveOffset = (DateTime.now().millisecondsSinceEpoch / 500);
-    double screenLavaY = lavaLevel - camera.viewfinder.position.y;
-
-    path.moveTo(0, screenLavaY);
-    for (double i = 0; i <= GameConstants.gameWidth; i += 20) {
-      double wave = sin(waveOffset + (i / 50)) * 5;
-      path.lineTo(i, screenLavaY + wave);
-    }
-    path.lineTo(GameConstants.gameWidth, screenLavaY + 2000);
-    path.lineTo(0, screenLavaY + 2000);
-    path.close();
-    
-    canvas.drawPath(path, paintLava);
-  }
+  // --- ĐÃ XÓA HÀM RENDER THỦ CÔNG ---
+  // Lava giờ tự vẽ chính nó thông qua Lava Component
 }
